@@ -1,51 +1,34 @@
-// api/log-visit.js
+// api/log-visit.js (Versión ESM y optimizada para Neon)
 
-// Importamos el cliente de PostgreSQL. 
-// Asegúrate de que el paquete 'pg' esté instalado en tu proyecto: npm install pg
-const { Client } = require('pg');
+// ➡️ Usamos la sintaxis ESM (import)
+import { neon } from '@neondatabase/serverless';
+// Nota: El driver de Neon usará la variable de entorno DATABASE_URL automáticamente.
+const sql = neon(process.env.DATABASE_URL);
 
 /**
- * Función principal del controlador de la API Route de Vercel.
- * Se encarga de extraer la IP del cliente y registrarla en la base de datos Neon.
- * @param {object} req - Objeto de solicitud (Request)
- * @param {object} res - Objeto de respuesta (Response)
+ * Serverless function handler (Usando ESM: export default).
  */
-module.exports = async (req, res) => {
-    // Solo permitimos solicitudes POST o GET
-    if (req.method !== 'POST' && req.method !== 'GET') {
-        // 405 Method Not Allowed
-        res.status(405).json({ success: false, message: 'Método no permitido. Usa POST o GET.' });
-        return;
+export default async function handler(req, res) {
+    // La función App.tsx está llamando con POST, nos aseguramos de que solo se permita esto.
+    if (req.method !== 'POST') {
+        return res.status(405).json({ success: false, message: 'Método no permitido. Usa POST.' });
     }
 
     // --- Extracción de la IP del cliente ---
     // Vercel inyecta la IP real del usuario en el encabezado 'x-forwarded-for'.
-    // Si hay múltiples IPs (proxies), tomamos la primera.
     const forwardedFor = req.headers['x-forwarded-for'];
-    const ipAddress = forwardedFor ? forwardedFor.split(',')[0].trim() : (req.connection ? req.connection.remoteAddress : 'Desconocida');
+    const ipAddress = forwardedFor ? forwardedFor.split(',')[0].trim() : 'Desconocida';
 
-    // Inicializamos la conexión con la base de datos.
-    // Utiliza la variable de entorno DATABASE_URL configurada en Vercel.
-    const client = new Client({
-        connectionString: process.env.DATABASE_URL,
-        ssl: {
-            // Necesario para evitar errores de certificado SSL/TLS en entornos serverless
-            rejectUnauthorized: false,
-        },
-    });
+    if (ipAddress === 'Desconocida') {
+        return res.status(400).json({ success: false, message: 'No se pudo obtener la dirección IP del cliente.' });
+    }
 
     try {
-        await client.connect();
+        // Ejecutamos la consulta usando el pooler de Neon
+        // Se encarga de la seguridad (SQL Injection) y la eficiencia.
+        await sql`INSERT INTO visits (ip_address) VALUES (${ipAddress})`;
 
-        // Consulta SQL para insertar la IP. La columna visit_time usa el DEFAULT (CURRENT_TIMESTAMP)
-        const queryText = 'INSERT INTO visits (ip_address) VALUES ($1)';
-        
-        // Ejecutamos la consulta
-        await client.query(queryText, [ipAddress]);
-
-        console.log(`Registro de visita exitoso para IP: ${ipAddress}`);
-
-        // Respuesta de éxito al cliente
+        // Respuesta de éxito
         res.status(200).json({ 
             success: true, 
             message: 'Visita registrada con éxito', 
@@ -53,23 +36,15 @@ module.exports = async (req, res) => {
         });
 
     } catch (error) {
-        // Manejo de errores de conexión o de la base de datos
+        // Manejo de errores de la base de datos o conexión
         console.error('Error al registrar la visita:', error);
         
-        // Respuesta de error al cliente (500 Internal Server Error)
+        // Devolvemos 500 si falla la conexión o la consulta
         res.status(500).json({ 
             success: false, 
             message: 'Error interno del servidor al registrar la visita.',
             details: error.message
         });
-    } finally {
-        // Cierre de la conexión para liberar recursos
-        if (client) {
-            try {
-                await client.end();
-            } catch (closeError) {
-                console.error('Error al cerrar la conexión del cliente:', closeError);
-            }
-        }
     }
-};
+    // No se necesita `client.end()` con el driver de Neon.
+}
